@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Conversa com Gêmeos — Endless Runner 3D (Three.js)</title>
+
+  <!-- Import map para módulos ES via unpkg (Three.js v0.164.1, GLTFLoader, DRACOLoader) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.164.1/build/three.module.js",
+      "GLTFLoader": "https://unpkg.com/three@0.164.1/examples/jsm/loaders/GLTFLoader.js",
+      "DRACOLoader": "https://unpkg.com/three@0.164.1/examples/jsm/loaders/DRACOLoader.js"
+    }
+  }
+  </script>
+
+  <style>
+    /* Estilos gerais e mobile-friendly */
+    html, body {
+      height: 100%;
+      margin: 0;
+      background-color: #a0d7e6; /* azul celeste claro */
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      overflow: hidden;
+      -webkit-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+      touch-action: none;
+      overscroll-behavior: none;
+    }
+
+    canvas { display: block; }
+
+    /* Container principal para o renderer */
+    #container {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
+    }
+
+    /* Tela de carregamento */
+    #loading {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(180deg, rgba(0,0,0,0.25), rgba(0,0,0,0.1));
+      color: white;
+      font-size: 1.2rem;
+      z-index: 100;
+      transition: opacity 0.6s ease;
+      pointer-events: auto;
+    }
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* HUD (pontuação) */
+    #hud {
+      position: fixed;
+      left: 10px;
+      top: 10px;
+      z-index: 50;
+      color: #fff;
+      text-shadow: 0 2px 6px rgba(0,0,0,0.6);
+      font-weight: 600;
+      background: rgba(0,0,0,0.15);
+      padding: 6px 10px;
+      border-radius: 6px;
+      backdrop-filter: blur(4px);
+    }
+
+    /* Fim de jogo */
+    #gameOver {
+      position: fixed;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      color: #ff4444;
+      font-size: 4em;
+      font-weight: 800;
+      text-shadow: 0 4px 14px rgba(0,0,0,0.6);
+      display: none;
+      z-index: 101;
+      pointer-events: none;
+    }
+
+    /* Botões de controle (touch) */
+    .control-btn {
+      position: fixed;
+      bottom: 20px;
+      width: 72px;
+      height: 72px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.3);
+      border: 2px solid rgba(0,0,0,0.4);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 2.5em;
+      color: #111;
+      z-index: 60;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+      touch-action: none;
+      transition: background-color 0.12s ease, opacity 0.12s ease;
+    }
+    .control-btn:active,
+    .control-btn.active {
+      background: rgba(255,255,255,0.5);
+    }
+    #leftBtn { left: 20px; }
+    #rightBtn { right: 20px; }
+
+    /* Remover destaques ao tocar e seleção de texto */
+    button, .control-btn {
+      -webkit-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+    }
+
+    /* Mensagem de erro de carregamento (texto no overlay) */
+    #loading .message {
+      text-align: center;
+      max-width: 90%;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <!-- Canvas explícito exigido na especificação -->
+    <canvas id="three-canvas"></canvas>
+  </div>
+
+  <div id="loading" aria-live="polite">
+    <div class="message">Carregando... (0%)</div>
+  </div>
+
+  <div id="hud">Pontuação: <span id="score">0</span></div>
+  <div id="gameOver">FIM DE JOGO!</div>
+
+  <div id="leftBtn" class="control-btn" aria-label="Esquerda" role="button">◀</div>
+  <div id="rightBtn" class="control-btn" aria-label="Direita" role="button">▶</div>
+
+  <script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'GLTFLoader';
+  import { DRACOLoader } from 'DRACOLoader';
+
+  // Configurações principais do jogo
+  const roadWidth = 10;
+  const roadLength = 200;
+  const roadHalf = roadLength / 2;
+  const scrollSpeed = 12.0; // unidades por segundo (cenário)
+  const carMoveSpeed = 6.0; // unidades por segundo (movimento lateral do jogador)
+  const enemySpeed = 8.0; // unidades por segundo (movimento do carro inimigo)
+  const buildingSpacing = 15;
+  const lightSpacing = 18;
+  const pointCount = 15;
+  const pointValue = 10;
+
+  // DOM
+  const container = document.getElementById('container');
+  const canvas = document.getElementById('three-canvas');
+  const loadingEl = document.getElementById('loading');
+  const loadingMsg = loadingEl.querySelector('.message');
+  const scoreEl = document.getElementById('score');
+  const gameOverEl = document.getElementById('gameOver');
+  const leftBtn = document.getElementById('leftBtn');
+  const rightBtn = document.getElementById('rightBtn');
+
+  // Estado do jogo
+  let score = 0;
+  let isGameOver = false;
+  let moveLeft = false;
+  let moveRight = false;
+
+  // Three.js: cena, câmera, renderer
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xa0d7e6);
+  scene.fog = new THREE.Fog(scene.background.getHex(), roadLength * 0.4, roadLength * 0.9);
+
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(0, 1.5, -7);
+
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  container.appendChild(renderer.domElement);
+
+  // Luzes
+  const ambient = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+  scene.add(ambient);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+  dirLight.position.set(5, 20, -10);
+  dirLight.castShadow = true;
+  dirLight.shadow.mapSize.width = 2048;
+  dirLight.shadow.mapSize.height = 2048;
+  dirLight.shadow.camera.left = -50;
+  dirLight.shadow.camera.right = 50;
+  dirLight.shadow.camera.top = 50;
+  dirLight.shadow.camera.bottom = -50;
+  dirLight.shadow.camera.near = 0.5;
+  dirLight.shadow.camera.far = 100;
+  scene.add(dirLight);
+
+  // Terreno (verde)
+  const groundGeo = new THREE.PlaneGeometry(roadLength * 1.5, roadLength);
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x55aa55 });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = -0.05;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Estrada (cinza)
+  const roadGeo = new THREE.PlaneGeometry(roadWidth, roadLength);
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
+  const road = new THREE.Mesh(roadGeo, roadMat);
+  road.rotation.x = -Math.PI / 2;
+  road.receiveShadow = true;
+  scene.add(road);
+
+  // Linhas tracejadas (faixa central)
+  const dashedGroup = new THREE.Group();
+  scene.add(dashedGroup);
+
+  const dashLength = 4;
+  const dashSpacing = 4;
+  const dashCount = Math.ceil(roadLength / (dashLength + dashSpacing)) + 8;
+  const dashGeo = new THREE.BoxGeometry(0.3, 0.01, dashLength);
+  const dashMat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+  for (let i = 0; i < dashCount; i++) {
+    const d = new THREE.Mesh(dashGeo, dashMat);
+    d.castShadow = false;
+    d.receiveShadow = true;
+    d.position.set(0, 0.01, (i - dashCount / 2) * (dashLength + dashSpacing));
+    dashedGroup.add(d);
+  }
+
+  // Guías (lateral com textura listrada)
+  function makeStripeTexture() {
+    const size = 64;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#ff3030';
+    ctx.fillRect(0, 0, size / 2, size);
+    return new THREE.CanvasTexture(canvas);
+  }
+  const stripeTex = makeStripeTexture();
+  stripeTex.wrapS = stripeTex.wrapT = THREE.RepeatWrapping;
+  stripeTex.repeat.set(roadLength / 10, 1);
+
+  const guideGeo = new THREE.BoxGeometry(0.3, 0.2, roadLength);
+  const guideMat = new THREE.MeshStandardMaterial({ map: stripeTex });
+  const leftGuide = new THREE.Mesh(guideGeo, guideMat);
+  leftGuide.position.set(-roadWidth / 2 + 0.15, 0.08, 0);
+  leftGuide.castShadow = true;
+  leftGuide.receiveShadow = true;
+  scene.add(leftGuide);
+
+  const rightGuide = leftGuide.clone();
+  rightGuide.position.x = -leftGuide.position.x;
+  scene.add(rightGuide);
+
+  // Edifícios (gerados e reciclados)
+  const buildings = new THREE.Group();
+  scene.add(buildings);
+
+  const buildingSlots = Math.ceil(roadLength / buildingSpacing);
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < buildingSlots; i++) {
+      const w = THREE.MathUtils.randFloat(4, 12);
+      const d = THREE.MathUtils.randFloat(4, 12);
+      const h = THREE.MathUtils.randFloat(10, 40);
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(Math.random() * 0.2 + 0.05, 0.4, 0.3 + Math.random() * 0.3) });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      const z = (i - buildingSlots / 2) * buildingSpacing + THREE.MathUtils.randFloatSpread(6);
+      mesh.position.set(side * (roadWidth / 2 + 6 + Math.random() * 8), h / 2 - 0.05, z);
+      buildings.add(mesh);
+    }
+  }
+
+  // Postes de iluminação
+  const poles = new THREE.Group();
+  scene.add(poles);
+  const poleCount = Math.ceil(roadLength / lightSpacing);
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < poleCount; i++) {
+      const z = (i - poleCount / 2) * lightSpacing + THREE.MathUtils.randFloatSpread(6);
+      const pole = new THREE.Group();
+      const stickGeo = new THREE.CylinderGeometry(0.08, 0.1, 6, 8);
+      const stickMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+      const shaft = new THREE.Mesh(stickGeo, stickMat);
+      shaft.position.set(0, 3, 0);
+      shaft.castShadow = true;
+      shaft.receiveShadow = true;
+      pole.add(shaft);
+
+      const armGeo = new THREE.BoxGeometry(1, 0.12, 0.12);
+      const arm = new THREE.Mesh(armGeo, stickMat);
+      arm.position.set(0.5 * side, 5.4, 0);
+      arm.castShadow = false;
+      pole.add(arm);
+
+      const bulbGeo = new THREE.SphereGeometry(0.2, 8, 8);
+      const bulbMat = new THREE.MeshStandardMaterial({ emissive: 0xfff1a5, color: 0xffffaa, emissiveIntensity: 1.5 });
+      const bulb = new THREE.Mesh(bulbGeo, bulbMat);
+      bulb.position.set(0.9 * side, 5.4, 0.0);
+      bulb.castShadow = false;
+      pole.add(bulb);
+
+      pole.position.set(side * (roadWidth / 2 + 5), 0, z);
+      poles.add(pole);
+    }
+  }
+
+  // Semáforos (par único posicionado à frente)
+  const trafficGroup = new THREE.Group();
+  const semaZ = roadLength * 0.4;
+  const semaPoleGeo = new THREE.CylinderGeometry(0.15, 0.15, 5, 8);
+  const semaPoleMat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+  const semaPole = new THREE.Mesh(semaPoleGeo, semaPoleMat);
+  semaPole.position.set(0, 2.5, semaZ);
+  semaPole.castShadow = true;
+  trafficGroup.add(semaPole);
+
+  const boxGeo = new THREE.BoxGeometry(0.5, 1.2, 0.3);
+  const boxMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+  const box = new THREE.Mesh(boxGeo, boxMat);
+  box.position.set(0, 3.4, semaZ + 0.2);
+  box.castShadow = true;
+  trafficGroup.add(box);
+
+  const colors = [0xff4444, 0xffdd44, 0x44ff44];
+  for (let i = 0; i < 3; i++) {
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), new THREE.MeshStandardMaterial({
+      emissive: colors[i],
+      color: colors[i],
+      emissiveIntensity: 1.5
+    }));
+    s.position.set(0, 3.9 + i * 0.35, semaZ + 0.2);
+    trafficGroup.add(s);
+  }
+  scene.add(trafficGroup);
+
+  // Pontos colecionáveis
+  const points = [];
+  const pointGeo = new THREE.SphereGeometry(0.3, 12, 12);
+  const pointMat = new THREE.MeshStandardMaterial({ color: 0xffff55, emissive: 0xffff66, emissiveIntensity: 1.5 });
+  for (let i = 0; i < pointCount; i++) {
+    const p = new THREE.Mesh(pointGeo, pointMat);
+    p.castShadow = false;
+    p.receiveShadow = false;
+    resetPoint(p, true);
+    scene.add(p);
+    points.push(p);
+  }
+
+  function resetPoint(p, startRandomZ = false) {
+    const z = startRandomZ ? THREE.MathUtils.randFloatSpread(roadLength / 2) + roadLength / 4 : roadHalf + THREE.MathUtils.randFloat(5, 50);
+    const x = THREE.MathUtils.randFloatSpread(roadWidth - 1);
+    p.position.set(x, 0.3 + 0.1, z);
+    p.visible = true;
+  }
+
+  // Player car & enemy
+  let player = null;
+  let playerBaseY = 0.5; // fallback
+  let enemy = null;
+
+  // Gerenciador de carregamento
+  const loadingManager = new THREE.LoadingManager();
+  loadingManager.onProgress = function (url, itemsLoaded, itemsTotal) {
+    const percent = Math.round((itemsLoaded / itemsTotal) * 100);
+    loadingMsg.textContent = `Carregando ${percent}%...`;
+  };
+  loadingManager.onLoad = function () {
+    setTimeout(() => {
+      loadingEl.classList.add('hidden');
+    }, 500);
+  };
+  loadingManager.onError = function (url) {
+    loadingMsg.innerHTML = `Erro ao carregar recurso: ${url}`;
+    loadingEl.classList.remove('hidden');
+  };
+
+  // Carregadores (GLTF + DRACO)
+  const dracoLoader = new DRACOLoader();
+  dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+
+  const gltfLoader = new GLTFLoader(loadingManager);
+  gltfLoader.setDRACOLoader(dracoLoader);
+
+  // Função utilitária para ativar sombras em todas as meshes
+  function enableShadows(obj) {
+    obj.traverse((c) => {
+      if (c.isMesh) {
+        c.castShadow = true;
+        c.receiveShadow = true;
+        if (Array.isArray(c.material)) {
+          c.material.forEach(m => { if (m) { m.needsUpdate = true; } });
+        } else if (c.material) {
+          c.material.needsUpdate = true;
+        }
+      }
+    });
+  }
+
+  // Tenta carregar o ferrari.glb
+  gltfLoader.load(
+    'https://threejs.org/examples/models/gltf/ferrari.glb',
+    (gltf) => {
+      player = gltf.scene;
+      player.scale.setScalar(0.8);
+      player.rotation.y = Math.PI;
+      // calcula carBaseY pela bounding box
+      const box = new THREE.Box3().setFromObject(player);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      playerBaseY = box.min.y * -1 + 0.01; // desloca para ficar sobre a estrada
+      player.position.set(0, playerBaseY, 0);
+      enableShadows(player);
+      scene.add(player);
+
+      // Cria o inimigo clonando o jogador
+      enemy = player.clone(true);
+      // pinta o inimigo de azul
+      enemy.traverse((m) => {
+        if (m.isMesh && m.material) {
+          if (Array.isArray(m.material)) {
+            m.material.forEach(mat => { if (mat.color) mat.color.setHex(0x0000ff); });
+          } else {
+            if (m.material.color) m.material.color.setHex(0x0000ff);
+            // aumenta leve emissive para destaque
+            if (m.material.emissive) m.material.emissive.setHex(0x000033);
+          }
+        }
+      });
+      const enemyX = (Math.random() > 0.5) ? roadWidth / 4 : -roadWidth / 4;
+      enemy.position.set(enemyX, playerBaseY, roadLength * 0.7);
+      enableShadows(enemy);
+      scene.add(enemy);
+    },
+    undefined,
+    (err) => {
+      console.error('Falha ao carregar ferrari.glb:', err);
+      loadingMsg.innerHTML = `Falha ao carregar o modelo do carro.<br>Usando substituto simples.`;
+      // Substituto: caixa vermelha 2x1x4
+      const geo = new THREE.BoxGeometry(2, 1, 4);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff3333 });
+      player = new THREE.Mesh(geo, mat);
+      playerBaseY = 0.51;
+      player.position.set(0, playerBaseY, 0);
+      player.castShadow = true;
+      player.receiveShadow = true;
+      scene.add(player);
+
+      enemy = player.clone();
+      enemy.traverse((m) => {
+        if (m.isMesh && m.material && m.material.color) m.material.color.setHex(0x0000ff);
+      });
+      const enemyX = (Math.random() > 0.5) ? roadWidth / 4 : -roadWidth / 4;
+      enemy.position.set(enemyX, playerBaseY, roadLength * 0.7);
+      scene.add(enemy);
+    }
+  );
+
+  // Caixa delimitadora reutilizável para colisões
+  const bboxPlayer = new THREE.Box3();
+  const bboxEnemy = new THREE.Box3();
+  const bboxPoint = new THREE.Box3();
+
+  // Temporização
+  const clock = new THREE.Clock();
+
+  // Entrada (teclado)
+  window.addEventListener('keydown', (e) => {
+    if (isGameOver) return;
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+      moveLeft = true;
+    }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+      moveRight = true;
+    }
+  }, { passive: true });
+
+  window.addEventListener('keyup', (e) => {
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+      moveLeft = false;
+    }
+    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+      moveRight = false;
+    }
+  }, { passive: true });
+
+  // Toque (botões)
+  function addTouchHandlers(btn, onStart, onEnd) {
+    btn.addEventListener('touchstart', (ev) => {
+      ev.preventDefault();
+      onStart();
+      btn.classList.add('active');
+    }, { passive: false });
+    btn.addEventListener('touchend', (ev) => {
+      ev.preventDefault();
+      onEnd();
+      btn.classList.remove('active');
+    }, { passive: false });
+    btn.addEventListener('touchcancel', (ev) => {
+      ev.preventDefault();
+      onEnd();
+      btn.classList.remove('active');
+    }, { passive: false });
+    // também mouse para testes desktop
+    btn.addEventListener('mousedown', (ev) => { ev.preventDefault(); onStart(); btn.classList.add('active'); }, { passive: false });
+    window.addEventListener('mouseup', (ev) => { onEnd(); btn.classList.remove('active'); }, { passive: true });
+  }
+
+  addTouchHandlers(leftBtn, () => { moveLeft = true; }, () => { moveLeft = false; });
+  addTouchHandlers(rightBtn, () => { moveRight = true; }, () => { moveRight = false; });
+
+  // Prevenir comportamento padrão do navegador em gestos
+  ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach((ev) => {
+    window.addEventListener(ev, (e) => {
+      // somente bloquear se target for o canvas ou os botões de controle
+      // Melhor prevenir em tudo para evitar pull-to-refresh.
+      e.preventDefault();
+    }, { passive: false });
+  });
+
+  // Redimensionamento
+  function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  }
+  window.addEventListener('resize', onWindowResize);
+
+  // Loop principal
+  function animate() {
+    const dt = Math.min(clock.getDelta(), 0.05); // cap para estabilidade
+    if (!isGameOver) {
+      update(dt);
+    }
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+
+  // Atualizações por frame
+  function update(dt) {
+    // desloca o mundo para trás (aparência de avanço)
+    const moveZ = scrollSpeed * dt;
+
+    // Move grupos de cenário (linhas, prédios, postes, guias)
+    dashedGroup.children.forEach((d) => {
+      d.position.z -= moveZ;
+      if (d.position.z < -roadHalf - dashLength) {
+        d.position.z += roadLength + (dashLength + dashSpacing) * 4;
+      }
+    });
+
+    buildings.children.forEach((b) => {
+      b.position.z -= moveZ;
+      if (b.position.z < -roadHalf - 10) {
+        b.position.z += roadLength + THREE.MathUtils.randFloatSpread(8);
+        // randomiza altura/leves variações
+        const h = THREE.MathUtils.randFloat(10, 40);
+        b.scale.set(1, 1, 1);
+        b.geometry = new THREE.BoxGeometry(
+          b.geometry.parameters.width || THREE.MathUtils.randFloat(4,12),
+          h,
+          b.geometry.parameters.depth || THREE.MathUtils.randFloat(4,12)
+        );
+        b.position.y = h / 2 - 0.05;
+      }
+    });
+
+    poles.children.forEach((p) => {
+      p.position.z -= moveZ;
+      if (p.position.z < -roadHalf - 10) {
+        p.position.z += roadLength + THREE.MathUtils.randFloatSpread(5);
+      }
+    });
+
+    // semáforo (um par) também se move
+    trafficGroup.children.forEach((c) => {
+      c.position.z -= moveZ;
+    });
+    if (trafficGroup.children.length && trafficGroup.children[0].position.z < -roadHalf - 10) {
+      trafficGroup.position.z += roadLength;
+      trafficGroup.children.forEach((c) => { c.position.z += roadLength; });
+    }
+
+    // pontos
+    points.forEach((p) => {
+      p.position.z -= moveZ;
+      // rotação sutil
+      p.rotation.y += dt * 2;
+      if (p.position.z < -roadHalf - 5) {
+        resetPoint(p, false);
+      }
+    });
+
+    // Controle do carro jogador
+    if (player) {
+      const leftLimit = -(roadWidth / 2 - 0.6);
+      const rightLimit = (roadWidth / 2 - 0.6);
+      // movimentar lateralmente
+      let dx = 0;
+      if (moveLeft && !moveRight) dx = -carMoveSpeed * dt;
+      if (moveRight && !moveLeft) dx = carMoveSpeed * dt;
+      player.position.x = THREE.MathUtils.clamp(player.position.x + dx, leftLimit, rightLimit);
+    }
+
+    // Inimigo movimento independente
+    if (enemy) {
+      enemy.position.z -= enemySpeed * dt;
+      if (enemy.position.z < -roadHalf - 10) {
+        // reciclar: reposicionar à frente em faixa aleatória
+        enemy.position.z += roadLength + THREE.MathUtils.randFloat(5, 40);
+        enemy.position.x = (Math.random() > 0.5) ? roadWidth / 4 : -roadWidth / 4;
+      }
+    }
+
+    // Atualizar câmera para seguir suavemente a posição x do carro
+    if (player) {
+      const targetX = player.position.x;
+      camera.position.x += (targetX - camera.position.x) * 0.1;
+      camera.position.y = playerBaseY + 3;
+      const lookAt = new THREE.Vector3(player.position.x, playerBaseY + 1, player.position.z + 5);
+      camera.lookAt(lookAt);
+      camera.position.z = player.position.z - 7;
+    }
+
+    // Colisões
+    if (player && enemy) {
+      bboxPlayer.setFromObject(player);
+      bboxEnemy.setFromObject(enemy);
+      if (bboxPlayer.intersectsBox(bboxEnemy)) {
+        // Colidiu — fim de jogo
+        isGameOver = true;
+        gameOverEl.style.display = 'block';
+      }
+    }
+
+    // Pontos (coleção)
+    points.forEach((p) => {
+      if (!p.visible) return;
+      bboxPoint.setFromObject(p);
+      if (player) {
+        bboxPlayer.setFromObject(player);
+        if (bboxPoint.intersectsBox(bboxPlayer)) {
+          // coletado
+          p.visible = false;
+          score += pointValue;
+          scoreEl.textContent = score;
+          // reposiciona para reciclável
+          p.position.z = roadHalf + THREE.MathUtils.randFloat(10, 60);
+          setTimeout(() => { p.visible = true; }, 800);
+        }
+      }
+    });
+  }
+
+  // Iniciar loop
+  animate();
+
+  </script>
+</body>
+</html>
